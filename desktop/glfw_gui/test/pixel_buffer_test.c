@@ -28,9 +28,9 @@ int main(void) {
         assert(pixel_argb_bytes(roundtrip, 64, bytes, 256, 64, 0));
         assert(!memcmp(source, roundtrip, sizeof source));
         assert(bytes[0] == ((source[0] >> 16) & 255) && bytes[3] == (source[0] >> 24));
-        int width = 1 + next() % 8, height = 1 + next() % 8;
-        int reverse = next() & 1, stride = reverse ? -8 : 8, offset = reverse ? (height - 1) * 8 : 0;
-        int alpha = next() & 1;
+        int width = 1 + (next() >> 16) % 8, height = 1 + (next() >> 16) % 8;
+        int reverse = (next() >> 16) & 1, stride = reverse ? -8 : 8, offset = reverse ? (height - 1) * 8 : 0;
+        int alpha = (next() >> 16) & 1;
         for (int y = 0; y < height; y++) for (int x = 0; x < width; x++) {
             uint32_t s = source[offset + y * stride + x];
             expected[y * 8 + x] = alpha ? reference(s, expected[y * 8 + x]) : s | UINT32_C(0xff000000);
