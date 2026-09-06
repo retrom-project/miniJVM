@@ -29,7 +29,8 @@ public class GDesktop extends GPanel implements GCallbackUI {
     protected float pxRatio;
     static GCmdHandler cmdHandler;
     GCallBack callback;
-    public static byte flush = 4;
+    private static final byte REPAINT_FRAMES = (byte) ("Emscripten".equals(System.getProperty("os.name")) ? 1 : 4);
+    public static byte flush = REPAINT_FRAMES;
     GForm curForm;
     //==================
     long splashStartAt = 0; //开机屏
@@ -147,16 +148,20 @@ public class GDesktop extends GPanel implements GCallbackUI {
     }
 
     public boolean flushReq() {
-        if (flush > 0) {
-            flush--;
-            return true;
+        synchronized (GDesktop.class) {
+            if (flush > 0) {
+                flush--;
+                return true;
+            }
+            return false;
         }
-        return false;
     }
 
-    public static void flush() {
-        flush = 4;
-        //in android may flush before paint,so the menu not shown
+    public static synchronized void flush() {
+        // Browser callbacks consume one pending request. Other platforms retain
+        // their settling frames (Android may flush before a menu is painted).
+        // Use the same lock when consuming so a game-thread repaint cannot be lost.
+        flush = REPAINT_FRAMES;
     }
 
     void drawDebugInfo(long vg) {

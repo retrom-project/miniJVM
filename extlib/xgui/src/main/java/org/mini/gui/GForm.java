@@ -71,8 +71,7 @@ public class GForm extends GContainer {
 
 
     public static void flush() {
-        GDesktop.flush = 4;
-        //in android may flush before paint,so the menu not shown
+        GDesktop.flush();
     }
 
     void paintFlyingObject(long vg) {

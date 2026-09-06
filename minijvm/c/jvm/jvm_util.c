@@ -1209,6 +1209,11 @@ s32 jarray_destroy(Instance *arr) {
  * @return ins
  */
 Instance *jarray_multi_create(Runtime *runtime, s32 *dim, s32 dim_size, Utf8String *pdesc, s32 deep) {
+    // multianewarray may allocate fewer dimensions than the array type has.
+    // Leave the remaining components null, without reading before dim[].
+    if (deep >= dim_size) {
+        return NULL;
+    }
     s32 len = dim[dim_size - 1 - deep];
     if (len == -1) {
         return NULL;
