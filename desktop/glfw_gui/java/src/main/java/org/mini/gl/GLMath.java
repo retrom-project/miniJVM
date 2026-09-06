@@ -112,6 +112,14 @@ public class GLMath {
      */
     static public native void img_fill(byte[] imgCanvas, int fillOffset, int fillPixels, int argb);
 
+    /** Bulk straight-ARGB source-over. False leaves buffers unchanged (invalid bounds or aliasing). */
+    public static native boolean img_argb_blit(int[] source, int sourceOffset, int sourceStride,
+                                               int[] destination, int destinationOffset, int destinationStride,
+                                               int width, int height, boolean processAlpha);
+
+    /** Converts straight ARGB ints and RGBA bytes. False leaves invalid buffers unchanged. */
+    public static native boolean img_argb_bytes(int[] argb, byte[] rgba, int count, boolean toRgba);
+
     /**
      * Draw img to imgCanvas,
      * limit in clipX,clipY,clipW,clipH

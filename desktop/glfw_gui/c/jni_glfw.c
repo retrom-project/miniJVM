@@ -18,6 +18,29 @@
 
 #include "jvm.h"
 #include "media.h"
+#include "pixel_buffer.h"
+
+s32 org_mini_gl_GLMath_img_argb_blit(Runtime *runtime, JClass *clazz) {
+    Instance *src = localvar_getRefer(runtime->localvar, 0);
+    Instance *dst = localvar_getRefer(runtime->localvar, 3);
+    int result = src && dst && pixel_argb_blit((uint32_t *)src->arr_body, src->arr_length,
+        localvar_getInt(runtime->localvar, 1), localvar_getInt(runtime->localvar, 2),
+        (uint32_t *)dst->arr_body, dst->arr_length,
+        localvar_getInt(runtime->localvar, 4), localvar_getInt(runtime->localvar, 5),
+        localvar_getInt(runtime->localvar, 6), localvar_getInt(runtime->localvar, 7), localvar_getInt(runtime->localvar, 8));
+    push_int(runtime->stack, result);
+    return 0;
+}
+
+s32 org_mini_gl_GLMath_img_argb_bytes(Runtime *runtime, JClass *clazz) {
+    Instance *argb = localvar_getRefer(runtime->localvar, 0);
+    Instance *rgba = localvar_getRefer(runtime->localvar, 1);
+    int result = argb && rgba && pixel_argb_bytes((uint32_t *)argb->arr_body, argb->arr_length,
+        (uint8_t *)rgba->arr_body, rgba->arr_length,
+        localvar_getInt(runtime->localvar, 2), localvar_getInt(runtime->localvar, 3));
+    push_int(runtime->stack, result);
+    return 0;
+}
 
 
 GlobeRefer refers;
@@ -1829,6 +1852,8 @@ static java_native_method method_glfw_table[] = {
         {"org/mini/gl/GLMath", "mat4x4_look_at",             "([F[F[F[F)[F",                     org_mini_glfw_utils_Gutil_mat4x4_look_at},
         {"org/mini/gl/GLMath", "mat4x4_trans_rotate_scale",  "([F[F[F[F)[F",                     org_mini_glfw_utils_Gutil_mat4x4_trans_rotate_scale},
         {"org/mini/gl/GLMath", "img_fill",                   "([BIII)V",                         org_mini_glfw_utils_Gutil_img_fill},
+        {"org/mini/gl/GLMath", "img_argb_blit", "([III[IIIIIZ)Z", org_mini_gl_GLMath_img_argb_blit},
+        {"org/mini/gl/GLMath", "img_argb_bytes", "([I[BIZ)Z", org_mini_gl_GLMath_img_argb_bytes},
         {"org/mini/gl/GLMath", "img_draw",                   "([BI[BIIIIIFFFFFFFZI)I",           org_mini_glfw_utils_Gutil_img_draw},
         {"org/mini/glfw/Glfw", "glfwGetTime",                "()D",                              org_mini_glfw_Glfw_glfwGetTime},
         {"org/mini/glfw/Glfw", "glfwSetTime",                "(D)V",                             org_mini_glfw_Glfw_glfwSetTime},
