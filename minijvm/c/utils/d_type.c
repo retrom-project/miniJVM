@@ -5,6 +5,35 @@
 
 #include <stdarg.h>
 
+#ifdef __EMSCRIPTEN__
+#include <stdlib.h>
+#include <emscripten/threading.h>
+
+/* A worker's stderr write is proxied synchronously to the browser thread,
+ * which also runs the Java main thread and may not yield for seconds. The
+ * collector logs every cycle, so a blocking write would stop collection while
+ * the mutators keep allocating. Workers queue the text to the browser thread
+ * instead; it keeps the stderr order of each worker. */
+static void _jvm_printf_flush_on_main(void *text) {
+    fputs((const char *) text, stderr);
+    fflush(stderr);
+    free(text);
+}
+
+static s32 _jvm_vprintf_from_worker(const c8 *format, va_list vp) {
+    va_list measure;
+    va_copy(measure, vp);
+    s32 len = vsnprintf(NULL, 0, format, measure);
+    va_end(measure);
+    if (len < 0) return len;
+    c8 *text = malloc((size_t) len + 1);
+    if (!text) return -1;
+    vsnprintf(text, (size_t) len + 1, format, vp);
+    emscripten_async_run_in_main_runtime_thread(EM_FUNC_SIG_VI, _jvm_printf_flush_on_main, text);
+    return len;
+}
+#endif
+
 
 #if __JVM_OS_ANDROID__
 
@@ -81,6 +110,13 @@ s32 jvm_printf(const c8 *format, ...) {
     }
     result = strlen(buf);
 #else
+#ifdef __EMSCRIPTEN__
+    if (!emscripten_is_main_runtime_thread()) {
+        result = _jvm_vprintf_from_worker(format, vp);
+        va_end(vp);
+        return result;
+    }
+#endif
     result = vfprintf(stderr, format, vp);
     fflush(stderr);
 #endif
