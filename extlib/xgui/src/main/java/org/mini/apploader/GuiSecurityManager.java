@@ -77,49 +77,29 @@ public class GuiSecurityManager extends SecurityManager {
     }
 
     private void checkRestrictedFile(String filePath) {
-        StackTraceElement[] stackTrace = Thread.currentThread().getStackTrace();
-        if (isAccessAllowed(stackTrace)) {
-            return;
-        }
-
-        if (isRunWork(stackTrace) && Thread.currentThread().getContextClassLoader() == AppManager.class.getClassLoader()) {
-            //System.out.println("runWork in AppManager");
-            return;
-        }
-
-        //当前处于应用程序中
+        // Most checks can be decided from the active application's path. Only
+        // an otherwise denied access needs the framework's stack exceptions.
+        // In particular RMS writes must not allocate a Java stack for every
+        // exists/open/rename check.
+        if (allowedThreadNames.contains(Thread.currentThread().getName())) return;
         GApplication app = GCallBack.getInstance().getApplication();
-        if (app != null && !isAppManager()) {
-            String appSaveRoot = app.getSaveRoot();
-            if (appSaveRoot == null) {//when new GApplication(), but not setJarName()
-                throw new SecurityException("Access declined: " + filePath);
-            }
-            // 检查是否是受限文件
-            String saveRootFilePath = GCallBack.getInstance().getAppSaveRoot();
-            File saveRootFile = new File(saveRootFilePath);
-            String absSaveRoot = saveRootFile.getAbsolutePath();
-
-
-            File appSaveRootFile = new File(appSaveRoot);
-            String absAppSaveRoot = appSaveRootFile.getAbsolutePath();
-            File file = new File(filePath);
-            String absolutePath = file.getAbsolutePath();
-
-            File tmpFile = new File(AppLoader.getTmpDirPath());
-            String absTmp = tmpFile.getAbsolutePath();
-            if (absolutePath.startsWith(absTmp)) { // 如果是访问临时目录下的文件
-                return;
-            }
-
-            if (absolutePath.startsWith(absSaveRoot)) {//如果是访问保存目录下的文件
-                if (!absolutePath.startsWith(absAppSaveRoot)) { // 如果不是访问当前Application的保存目录下的文件
-//                    System.out.println("absSaveRoot= " + absSaveRoot);
-//                    System.out.println("absAppSaveRoot= " + absAppSaveRoot);
-//                    System.out.println("absolutePath= " + absolutePath);
-                    throw new SecurityException("Access declined: " + file);
-                }
-            }
+        if (app == null || isAppManager()) return;
+        String appRoot = app.getSaveRoot();
+        boolean allowed = false;
+        if (appRoot != null) {
+            String absolute = new File(filePath).getAbsolutePath();
+            String allApps = new File(GCallBack.getInstance().getAppSaveRoot()).getAbsolutePath();
+            String currentApp = new File(appRoot).getAbsolutePath();
+            String temporary = new File(AppLoader.getTmpDirPath()).getAbsolutePath();
+            // Preserve the existing path policy; this change only avoids stack
+            // construction for paths that policy already permits.
+            allowed = absolute.startsWith(temporary) || !absolute.startsWith(allApps) || absolute.startsWith(currentApp);
         }
+        if (allowed) return;
+        StackTraceElement[] stackTrace = Thread.currentThread().getStackTrace();
+        if (isAccessAllowed(stackTrace) || isRunWork(stackTrace) &&
+                Thread.currentThread().getContextClassLoader() == AppManager.class.getClassLoader()) return;
+        throw new SecurityException("Access declined: " + filePath);
     }
 
     private boolean isAppManager() {

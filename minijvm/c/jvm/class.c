@@ -99,6 +99,8 @@ void class_clear_refer(PeerClassLoader *cloader, JClass *clazz) {
     }
     gc_obj_release(cloader->jvm->collector, clazz->ins_class);
     clazz->ins_class = NULL;
+    gc_obj_release(cloader->jvm->collector, clazz->init_failure);
+    clazz->init_failure = NULL;
 }
 //===============================    Initialization related  ==================================
 
@@ -448,20 +450,45 @@ s32 class_prepar(Instance *loader, JClass *clazz, Runtime *runtime) {
  * @param clazz class
  * @param runtime  runtime
  */
-void class_clinit(JClass *clazz, Runtime *runtime) {
-    /* Resolution and <clinit> run on the caller's shared operand stack. The
-       current VM reports and suppresses initialization failures here, so no
-       temporary value or exception object may escape into the pending caller
-       expression. */
+s32 class_clinit(JClass *clazz, Runtime *runtime) {
     StackEntry *caller_sp = runtime->stack->sp;
-    vm_share_lock(runtime->jvm);
-    runtime->thrd_info->no_pause++;
-    if (clazz->status < CLASS_STATUS_PREPARED) {
-        class_prepar(clazz->jloader, clazz, runtime);
+    MiniJVM *jvm = runtime->jvm;
+    jthread_block_enter(runtime);
+    vm_share_lock(jvm);
+    while (clazz->init_owner && clazz->init_owner != runtime->thrd_info) {
+        vm_share_timedwait(jvm, 10);
     }
-    if (clazz->status < CLASS_STATUS_CLINITING) {
-        clazz->status = CLASS_STATUS_CLINITING;
-
+    if (clazz->init_owner == runtime->thrd_info || clazz->status == CLASS_STATUS_CLINITED) {
+        vm_share_unlock(jvm);
+        jthread_block_exit(runtime);
+        return RUNTIME_STATUS_NORMAL;
+    }
+    if (clazz->status == CLASS_STATUS_CLINIT_FAILED) {
+        vm_share_unlock(jvm);
+        jthread_block_exit(runtime);
+        push_ref(runtime->stack, exception_create_str(JVM_ERROR_NOCLASSDEFFOUND, runtime, utf8_cstr(clazz->name)));
+        return RUNTIME_STATUS_EXCEPTION;
+    }
+    clazz->init_owner = runtime->thrd_info;
+    // Allocate every dispatch cache before resolution can re-enter Java via a
+    // class loader. A recursive call may execute methods of this same class.
+    s32 c;
+    for (c = 0; c < clazz->constantPool.methodRef->length; c++) {
+        ConstantMethodRef *cmr = arraylist_get_value(clazz->constantPool.methodRef, c);
+        if (!cmr->virtual_methods) cmr->virtual_methods = pairlist_create(0);
+    }
+    for (c = 0; c < clazz->constantPool.interfaceMethodRef->length; c++) {
+        ConstantMethodRef *cmr = arraylist_get_value(clazz->constantPool.interfaceMethodRef, c);
+        if (!cmr->virtual_methods) cmr->virtual_methods = pairlist_create(0);
+    }
+    vm_share_unlock(jvm);
+    jthread_block_exit(runtime);
+    // Class loading and user initializers may proxy I/O to the browser main
+    // thread. Never hold the shared metadata lock across those callbacks.
+    if (clazz->status < CLASS_STATUS_PREPARED) class_prepar(clazz->jloader, clazz, runtime);
+    clazz->status = CLASS_STATUS_CLINITING;
+    s32 result = RUNTIME_STATUS_NORMAL;
+    {
         s32 i, len;
 
         /**
@@ -480,14 +507,14 @@ void class_clinit(JClass *clazz, Runtime *runtime) {
             // }
 
             cmr->methodInfo = find_methodInfo_by_methodref(clazz, cmr->item.index, runtime);
-            cmr->virtual_methods = pairlist_create(0);
+
             //jvm_printf("%s.%s %llx\n", utf8_cstr(clazz->name), utf8_cstr(cmr->name), (s64) (intptr_t) cmr->virtual_methods);
         }
 
         for (i = 0; i < clazz->constantPool.interfaceMethodRef->length; i++) {
             ConstantMethodRef *cmr = (ConstantMethodRef *) arraylist_get_value(clazz->constantPool.interfaceMethodRef, i);
             cmr->methodInfo = find_methodInfo_by_methodref(clazz, cmr->item.index, runtime);
-            cmr->virtual_methods = pairlist_create(0);
+
         }
 
         for (i = 0; i < clazz->constantPool.fieldRef->length; i++) {
@@ -498,7 +525,7 @@ void class_clinit(JClass *clazz, Runtime *runtime) {
                 jvm_printf("field not found %s.%s \n", utf8_cstr(class_get_constant_classref(clazz, cfr->classIndex)->name), utf8_cstr(class_get_constant_utf8(clazz, class_get_constant_name_and_type(clazz, cfr->nameAndTypeIndex)->nameIndex)->utfstr));
                 fi = find_fieldInfo_by_fieldref(clazz, cfr->item.index, runtime);
             }
-            if (fi->_this_class->status < CLASS_STATUS_CLINITED) {
+            if (fi && fi->_this_class->status < CLASS_STATUS_CLINITED) {
                 //class_clinit(fi->_this_class, runtime); //init here would too early
             }
         }
@@ -571,17 +598,10 @@ void class_clinit(JClass *clazz, Runtime *runtime) {
             }
         }
 
-        //Initialize the base class first
         JClass *superclass = getSuperClass(clazz);
-        if (superclass && superclass->status < CLASS_STATUS_CLINITED) {
-            /* Class initializers can perform long-running Java work. Release
-               the metadata lock so normal interpreter/JIT safepoints remain
-               available to GC while the superclass initializes. */
-            runtime->thrd_info->no_pause--;
-            vm_share_unlock(runtime->jvm);
-            class_clinit(superclass, runtime);
-            vm_share_lock(runtime->jvm);
-            runtime->thrd_info->no_pause++;
+        if (superclass && superclass->status != CLASS_STATUS_CLINITED) {
+            result = class_clinit(superclass, runtime);
+            if (result != RUNTIME_STATUS_NORMAL) goto initialization_finished;
         }
 
         MethodPool *p = &(clazz->methodPool);
@@ -589,26 +609,29 @@ void class_clinit(JClass *clazz, Runtime *runtime) {
             //jvm_printf("%s,%s\n", utf8_cstr(p->methodRef[i].name), utf8_cstr(p->methodRef[i].descriptor));
             MethodInfo *mi = &(p->method[i]);
             if (utf8_equals_c(mi->name, STR_METHOD_CLINIT)) {
-                runtime->thrd_info->no_pause--;
-                vm_share_unlock(runtime->jvm);
-                s32 ret = execute_method_impl(mi, runtime);
-                if (ret == RUNTIME_STATUS_EXCEPTION) {
-                    print_exception(runtime);
-                }
-                vm_share_lock(runtime->jvm);
-                runtime->thrd_info->no_pause++;
-                //jvm_printf("clinit %s.%s\n", utf8_cstr(clazz->name), utf8_cstr(mi->name));
+                result = execute_method_impl(mi, runtime);
                 break;
             }
         }
 #if _JVM_DEBUG_LOG_LEVEL > 2
         //jvm_printf("hold class %s\n", utf8_cstr(clazz->name));
 #endif
-        clazz->status = CLASS_STATUS_CLINITED;
+    }
+initialization_finished:
+    if (result == RUNTIME_STATUS_EXCEPTION) {
+        clazz->init_failure = pop_ref(runtime->stack);
+        gc_obj_hold(jvm->collector, clazz->init_failure);
     }
     runtime->stack->sp = caller_sp;
-    runtime->thrd_info->no_pause--;
-    vm_share_unlock(runtime->jvm);
+    jthread_block_enter(runtime);
+    vm_share_lock(jvm);
+    clazz->status = result == RUNTIME_STATUS_NORMAL ? CLASS_STATUS_CLINITED : CLASS_STATUS_CLINIT_FAILED;
+    clazz->init_owner = NULL;
+    vm_share_notifyall(jvm);
+    vm_share_unlock(jvm);
+    jthread_block_exit(runtime);
+    if (result == RUNTIME_STATUS_EXCEPTION) push_ref(runtime->stack, clazz->init_failure);
+    return result;
 }
 
 

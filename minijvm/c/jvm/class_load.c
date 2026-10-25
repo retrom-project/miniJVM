@@ -2123,21 +2123,10 @@ JClass *load_class(Instance *jloader, Utf8String *pClassName, Runtime *runtime) 
                    inflates the MIDlet JAR, then restore the original depth. */
                 s32 unlocked = 0;
                 JavaThreadInfo *owner = (JavaThreadInfo *) (intptr_t) thrd_current();
-                s32 release_inherited = 0;
-                if (jloader && jloader->mb.clazz) {
-                    Utf8String *loader_name = jloader->mb.clazz->name;
-                    s32 standalone_media_load =
-                            utf8_equals_c(loader_name, "org/mini/apploader/StandalongGuiAppClassLoader") &&
-                            utf8_equals_c(pClassName, "org/recompile/mobile/MiniJvmPlatformPlayer");
-                    release_inherited =
-                            utf8_equals_c(loader_name, "org/recompile/mobile/MIDletLoader") ||
-                            utf8_equals_c(loader_name, "sun/misc/Launcher$AppClassLoader") ||
-                            standalone_media_load;
-                }
                 do {
                     vm_share_unlock(jvm);
                     unlocked++;
-                } while (release_inherited && jvm->threadlock.owner_thread == owner &&
+                } while (jvm->threadlock.owner_thread == owner &&
                         jvm->threadlock.count > 0);
                 s32 ret = execute_method_impl(jvm->shortcut.launcher_loadClass, runtime);
                 while (unlocked-- > 0) vm_share_lock(jvm);

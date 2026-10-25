@@ -18,6 +18,16 @@ extern "C" {
 #endif
 
 
+/* Filesystem calls may synchronously proxy to the browser thread. Only the
+ * native I/O belongs in this scope: Java allocation/field writes resume after
+ * the safepoint. JNI parameters and any result arrays remain rooted. */
+#define JNI_BLOCKING_IO(runtime, operation) do { \
+    const u8 was_blocking = (runtime)->thrd_info->is_blocking; \
+    jthread_block_enter(runtime); \
+    operation; \
+    if (!was_blocking) jthread_block_exit(runtime); \
+} while (0)
+
 #define  SOCK_OP_TYPE_NON_BLOCK   0
 #define  SOCK_OP_TYPE_REUSEADDR   1
 #define  SOCK_OP_TYPE_RCVBUF   2
@@ -795,7 +805,8 @@ s32 org_mini_fs_InnerFile_openFile(Runtime *runtime, JClass *clazz) {
         ByteBuf *platformPath = bytebuf_create(0);
         conv_utf8_2_platform_encoding(platformPath, filepath);
 
-        FILE *fd = fopen(platformPath->buf, mode_arr->arr_body);
+        FILE *fd;
+        JNI_BLOCKING_IO(runtime, fd = fopen(platformPath->buf, mode_arr->arr_body));
         push_long(runtime->stack, (s64) (intptr_t) fd);
 
         bytebuf_destroy(platformPath);
@@ -815,7 +826,8 @@ s32 org_mini_fs_InnerFile_openFD(Runtime *runtime, JClass *clazz) {
     s32 pfd = localvar_getInt(runtime->localvar, 0);
     Instance *mode_arr = localvar_getRefer(runtime->localvar, 1);
     if (pfd >= 0) {
-        FILE *fd = fdopen(pfd, mode_arr->arr_body);
+        FILE *fd;
+        JNI_BLOCKING_IO(runtime, fd = fdopen(pfd, mode_arr->arr_body));
         push_long(runtime->stack, (s64) (intptr_t) fd);
     } else {
         push_long(runtime->stack, 0);
@@ -835,7 +847,8 @@ s32 org_mini_fs_InnerFile_fileno(Runtime *runtime, JClass *clazz) {
     l2d.l = localvar_getLong(runtime->localvar, 0);
     FILE *fd = (FILE *) (intptr_t) l2d.l;
     if (fd) {
-        s32 fileno = os_fileno(fd);
+        s32 fileno;
+        JNI_BLOCKING_IO(runtime, fileno = os_fileno(fd));
         push_int(runtime->stack, fileno);
     }
 
@@ -852,7 +865,7 @@ s32 org_mini_fs_InnerFile_closeFile(Runtime *runtime, JClass *clazz) {
     FILE *fd = (FILE *) (intptr_t) l2d.l;
     s32 ret = -1;
     if (fd) {
-        ret = fclose(fd);
+        JNI_BLOCKING_IO(runtime, ret = fclose(fd));
     }
     push_int(runtime->stack, ret);
 #if _JVM_DEBUG_LOG_LEVEL > 5
@@ -868,7 +881,7 @@ s32 org_mini_fs_InnerFile_read0(Runtime *runtime, JClass *clazz) {
     FILE *fd = (FILE *) (intptr_t) l2d.l;
     s32 ret = -1;
     if (fd) {
-        ret = fgetc(fd);
+        JNI_BLOCKING_IO(runtime, ret = fgetc(fd));
         if (ret == EOF) {
             push_int(runtime->stack, -1);
         } else {
@@ -892,7 +905,7 @@ s32 org_mini_fs_InnerFile_write0(Runtime *runtime, JClass *clazz) {
     u8 byte = (u8) localvar_getInt(runtime->localvar, 2);
     s32 ret = -1;
     if (fd) {
-        ret = fputc(byte, fd);
+        JNI_BLOCKING_IO(runtime, ret = fputc(byte, fd));
         if (ret == EOF) {
             push_int(runtime->stack, -1);
         } else {
@@ -927,7 +940,7 @@ s32 org_mini_fs_InnerFile_readbuf(Runtime *runtime, JClass *clazz) {
     if (fd && bytes_arr && bytes_arr->mb.type == MEM_TYPE_ARR) {
         arr_length = bytes_arr->arr_length;
         if (bytes_arr->arr_body && offset >= 0 && len >= 0 && offset <= arr_length && len <= arr_length - offset) {
-        ret = (s32) fread(bytes_arr->arr_body + offset, 1, len, fd);
+        JNI_BLOCKING_IO(runtime, ret = (s32) fread(bytes_arr->arr_body + offset, 1, len, fd));
         }
     }
     if (ret == 0) {
@@ -960,7 +973,7 @@ s32 org_mini_fs_InnerFile_writebuf(Runtime *runtime, JClass *clazz) {
     if (fd && bytes_arr && bytes_arr->mb.type == MEM_TYPE_ARR) {
         arr_length = bytes_arr->arr_length;
         if (bytes_arr->arr_body && offset >= 0 && len >= 0 && offset <= arr_length && len <= arr_length - offset) {
-            ret = (s32) fwrite(bytes_arr->arr_body + offset, 1, len, fd);
+            JNI_BLOCKING_IO(runtime, ret = (s32) fwrite(bytes_arr->arr_body + offset, 1, len, fd));
         }
         if (ret == 0) {
             ret = -1;
@@ -988,7 +1001,7 @@ s32 org_mini_fs_InnerFile_seek0(Runtime *runtime, JClass *clazz) {
     s64 filepos = l2d.l;
     s32 ret = -1;
     if (fd) {
-        ret = fseek(fd, (long) filepos, SEEK_SET);
+        JNI_BLOCKING_IO(runtime, ret = fseek(fd, (long) filepos, SEEK_SET));
     }
     push_int(runtime->stack, ret);
 #if _JVM_DEBUG_LOG_LEVEL > 5
@@ -1007,10 +1020,10 @@ s32 org_mini_fs_InnerFile_available0(Runtime *runtime, JClass *clazz) {
 
     s32 cur = 0, end = 0;
     if (fd) {
-        cur = ftell(fd);
-        fseek(fd, (long) 0, SEEK_END);
-        end = ftell(fd);
-        fseek(fd, (long) cur, SEEK_SET);
+        JNI_BLOCKING_IO(runtime, cur = ftell(fd));
+        JNI_BLOCKING_IO(runtime, fseek(fd, (long) 0, SEEK_END));
+        JNI_BLOCKING_IO(runtime, end = ftell(fd));
+        JNI_BLOCKING_IO(runtime, fseek(fd, (long) cur, SEEK_SET));
     }
     push_int(runtime->stack, end - cur);
 #if _JVM_DEBUG_LOG_LEVEL > 5
@@ -1034,19 +1047,19 @@ s32 org_mini_fs_InnerFile_setLength0(Runtime *runtime, JClass *clazz) {
     s32 ret = 0;
     if (fd) {
         s64 pos;
-        ret = fseek(fd, 0, SEEK_END);
+        JNI_BLOCKING_IO(runtime, ret = fseek(fd, 0, SEEK_END));
         if (!ret) {
-            ret = ftell(fd);
+            JNI_BLOCKING_IO(runtime, ret = ftell(fd));
             if (!ret) {
                 if (filelen < pos) {
-                    os_set_file_length(fd, filelen);
+                    JNI_BLOCKING_IO(runtime, os_set_file_length(fd, filelen));
                 } else {
                     u8 d = 0;
                     s64 i, imax = filelen - pos;
                     for (i = 0; i < imax; i++) {
-                        fwrite(&d, 1, 1, fd);
+                        JNI_BLOCKING_IO(runtime, fwrite(&d, 1, 1, fd));
                     }
-                    fflush(fd);
+                    JNI_BLOCKING_IO(runtime, fflush(fd));
                 }
             }
         }
@@ -1066,7 +1079,7 @@ s32 org_mini_fs_InnerFile_flush0(Runtime *runtime, JClass *clazz) {
     FILE *fd = (FILE *) (intptr_t) l2d.l;
     s32 ret = -1;
     if (fd) {
-        ret = fflush(fd);
+        JNI_BLOCKING_IO(runtime, ret = fflush(fd));
     }
     push_int(runtime->stack, ret);
 #if _JVM_DEBUG_LOG_LEVEL > 5
@@ -1090,7 +1103,8 @@ s32 org_mini_fs_InnerFile_loadFS(Runtime *runtime, JClass *clazz) {
             push_ref(runtime->stack, (__refer) exception);
             ret = RUNTIME_STATUS_EXCEPTION;
         } else {
-            s32 state = stat(platformPath->buf, &buf);
+            s32 state;
+            JNI_BLOCKING_IO(runtime, state = stat(platformPath->buf, &buf));
             s32 a = S_ISDIR(buf.st_mode);
             if (state == 0) {
                 c8 *className = "org/mini/fs/InnerFileStat";
@@ -1138,9 +1152,11 @@ s32 org_mini_fs_InnerFile_listDir(Runtime *runtime, JClass *clazz) {
         struct dirent *dp;
         ByteBuf *platformPath = bytebuf_create(0);
         conv_utf8_2_platform_encoding(platformPath, filepath);
-        dirp = opendir(platformPath->buf); // pointer to the opened directory
+        JNI_BLOCKING_IO(runtime, dirp = opendir(platformPath->buf)); // pointer to the opened directory
         if (dirp) {
-            while ((dp = readdir(dirp)) != NULL) {
+            while (1) {
+                JNI_BLOCKING_IO(runtime, dp = readdir(dirp));
+                if (!dp) break;
                 // read the directory through the directory pointer
                 if (strcmp(dp->d_name, ".") == 0) {
                     continue;
@@ -1156,7 +1172,7 @@ s32 org_mini_fs_InnerFile_listDir(Runtime *runtime, JClass *clazz) {
                 utf8_destroy(ustr);
                 arraylist_push_back(files, jstr);
             }
-            (void) closedir(dirp); // close the directory
+            JNI_BLOCKING_IO(runtime, (void) closedir(dirp)); // close the directory
 
             s32 i;
             Utf8String *ustr = utf8_create_c(STR_CLASS_JAVA_LANG_STRING);
@@ -1194,7 +1210,8 @@ s32 org_mini_fs_InnerFile_listWinDrivers(Runtime *runtime, JClass *clazz) {
 #define MAX_PATH_BUF_LEN 120
     DWORD mydrives = MAX_PATH_BUF_LEN; // buffer length
     c8 lpBuffer[MAX_PATH_BUF_LEN]; // buffer for drive string storage
-    DWORD fillLen = GetLogicalDriveStrings(mydrives, lpBuffer);
+    DWORD fillLen;
+    JNI_BLOCKING_IO(runtime, fillLen = GetLogicalDriveStrings(mydrives, lpBuffer));
 
     lpBuffer[fillLen] = '\0';
     s64 i;
@@ -1212,7 +1229,8 @@ s32 org_mini_fs_InnerFile_listWinDrivers(Runtime *runtime, JClass *clazz) {
 s32 org_mini_fs_InnerFile_getcwd(Runtime *runtime, JClass *clazz) {
     ByteBuf *platformPath = bytebuf_create(1024);
 
-    __refer ret = getcwd(platformPath->buf, platformPath->_alloc_size);
+    __refer ret;
+    JNI_BLOCKING_IO(runtime, ret = getcwd(platformPath->buf, platformPath->_alloc_size));
     if (ret) {
         Utf8String *filepath = utf8_create();
         conv_platform_encoding_2_utf8(filepath, platformPath->buf);
@@ -1241,7 +1259,8 @@ s32 org_mini_fs_InnerFile_chmod(Runtime *runtime, JClass *clazz) {
         ByteBuf *platformPath = bytebuf_create(0);
         conv_utf8_2_platform_encoding(platformPath, filepath);
 
-        s32 ret = chmod(platformPath->buf, mode);
+        s32 ret;
+        JNI_BLOCKING_IO(runtime, ret = chmod(platformPath->buf, mode));
         push_int(runtime->stack, ret);
 
         bytebuf_destroy(platformPath);
@@ -1268,7 +1287,8 @@ s32 org_mini_fs_InnerFile_rename0(Runtime *runtime, JClass *clazz) {
         ByteBuf *newPath = bytebuf_create(0);
         conv_utf8_2_platform_encoding(newPath, filepath);
 
-        s32 ret = rename(oldPath->buf, newPath->buf);
+        s32 ret;
+        JNI_BLOCKING_IO(runtime, ret = rename(oldPath->buf, newPath->buf));
         push_int(runtime->stack, ret);
 
         bytebuf_destroy(oldPath);
@@ -1292,9 +1312,9 @@ s32 org_mini_fs_InnerFile_getTmpDir(Runtime *runtime, JClass *clazz) {
     if (val) {
         tdir = utf8_create_copy(val);
         utf8_append_c(tdir, "/tmp/");
-        os_mkdir(utf8_cstr(tdir));
+        JNI_BLOCKING_IO(runtime, os_mkdir(utf8_cstr(tdir)));
     } else {
-        tdir = os_get_tmp_dir();
+        JNI_BLOCKING_IO(runtime, tdir = os_get_tmp_dir());
     }
     utf8_destroy(key);
 
@@ -1326,7 +1346,7 @@ s32 org_mini_fs_InnerFile_mkdir0(Runtime *runtime, JClass *clazz) {
         ByteBuf *platformPath = bytebuf_create(0);
         conv_utf8_2_platform_encoding(platformPath, filepath);
 
-        ret = os_mkdir(platformPath->buf);
+        JNI_BLOCKING_IO(runtime, ret = os_mkdir(platformPath->buf));
         push_int(runtime->stack, ret);
 
         bytebuf_destroy(platformPath);
@@ -1362,12 +1382,12 @@ s32 org_mini_fs_InnerFile_delete0(Runtime *runtime, JClass *clazz) {
         conv_utf8_2_platform_encoding(platformPath, filepath);
 
         struct stat buf;
-        stat(platformPath->buf, &buf);
+        JNI_BLOCKING_IO(runtime, stat(platformPath->buf, &buf));
         s32 a = S_ISDIR(buf.st_mode);
         if (a) {
-            ret = rmdir(platformPath->buf);
+            JNI_BLOCKING_IO(runtime, ret = rmdir(platformPath->buf));
         } else {
-            ret = remove(platformPath->buf);
+            JNI_BLOCKING_IO(runtime, ret = remove(platformPath->buf));
         }
         push_int(runtime->stack, ret);
 
@@ -1392,7 +1412,7 @@ s32 org_mini_zip_ZipFile_getEntryIndex0(Runtime *runtime, JClass *clazz) {
     Instance *name_arr = localvar_getRefer(runtime->localvar, 1);
     s32 ret = -1;
     if (zip_path_arr && name_arr) {
-        ret = zip_get_file_index(zip_path_arr->arr_body, name_arr->arr_body);
+        JNI_BLOCKING_IO(runtime, ret = zip_get_file_index(zip_path_arr->arr_body, name_arr->arr_body));
     }
     push_int(runtime->stack, ret);
 #if _JVM_DEBUG_LOG_LEVEL > 5
@@ -1407,7 +1427,7 @@ s32 org_mini_zip_ZipFile_getEntrySize0(Runtime *runtime, JClass *clazz) {
     Instance *name_arr = localvar_getRefer(runtime->localvar, 1);
     s64 ret = -1;
     if (zip_path_arr && name_arr) {
-        ret = zip_get_file_unzip_size(zip_path_arr->arr_body, name_arr->arr_body);
+        JNI_BLOCKING_IO(runtime, ret = zip_get_file_unzip_size(zip_path_arr->arr_body, name_arr->arr_body));
     }
     push_long(runtime->stack, ret);
 #if _JVM_DEBUG_LOG_LEVEL > 5
@@ -1422,13 +1442,13 @@ s32 org_mini_zip_ZipFile_getEntry0(Runtime *runtime, JClass *clazz) {
     Instance *name_arr = localvar_getRefer(runtime->localvar, 1);
     s32 ret = -1;
     if (zip_path_arr && name_arr) {
-        s64 filesize = zip_get_file_unzip_size(zip_path_arr->arr_body, name_arr->arr_body);
+        s64 filesize;
+        JNI_BLOCKING_IO(runtime, filesize = zip_get_file_unzip_size(zip_path_arr->arr_body, name_arr->arr_body));
         if (filesize >= 0) {
             Instance *arr = jarray_create_by_type_index(runtime, (s32) filesize, DATATYPE_BYTE);
-            ret = zip_loadfile_to_mem(zip_path_arr->arr_body, name_arr->arr_body, arr->arr_body, filesize);
-            if (ret == 0) {
-                push_ref(runtime->stack, arr);
-            }
+            push_ref(runtime->stack, arr); /* Root the result across proxy I/O and GC. */
+            JNI_BLOCKING_IO(runtime, ret = zip_loadfile_to_mem(zip_path_arr->arr_body, name_arr->arr_body, arr->arr_body, filesize));
+            if (ret != 0) pop_ref(runtime->stack);
         }
     }
     if (ret) {
@@ -1447,8 +1467,8 @@ s32 org_mini_zip_ZipFile_putEntry0(Runtime *runtime, JClass *clazz) {
     Instance *content_arr = localvar_getRefer(runtime->localvar, 2);
     s32 ret = -1;
     if (zip_path_arr && name_arr) {
-        zip_savefile_mem(zip_path_arr->arr_body, name_arr->arr_body, content_arr ? content_arr->arr_body : NULL,
-                         content_arr ? content_arr->arr_length : 0);
+        JNI_BLOCKING_IO(runtime, zip_savefile_mem(zip_path_arr->arr_body, name_arr->arr_body, content_arr ? content_arr->arr_body : NULL,
+                         content_arr ? content_arr->arr_length : 0));
         ret = 0;
     }
     push_int(runtime->stack, ret);
@@ -1464,7 +1484,7 @@ s32 org_mini_zip_ZipFile_fileCount0(Runtime *runtime, JClass *clazz) {
 
     s32 ret = 0;
     if (zip_path_arr) {
-        ret = zip_filecount(zip_path_arr->arr_body);
+        JNI_BLOCKING_IO(runtime, ret = zip_filecount(zip_path_arr->arr_body));
     }
     push_int(runtime->stack, ret);
 #if _JVM_DEBUG_LOG_LEVEL > 5
@@ -1478,7 +1498,8 @@ s32 org_mini_zip_ZipFile_listFiles0(Runtime *runtime, JClass *clazz) {
     Instance *zip_path_arr = localvar_getRefer(runtime->localvar, 0);
     s32 ret = -1;
     if (zip_path_arr) {
-        ArrayList *list = zip_get_filenames(zip_path_arr->arr_body);
+        ArrayList *list;
+        JNI_BLOCKING_IO(runtime, list = zip_get_filenames(zip_path_arr->arr_body));
         if (list) {
             Utf8String *clustr = utf8_create_c(STR_CLASS_JAVA_LANG_STRING);
             Instance *jarr = jarray_create_by_type_name(runtime, list->length, clustr, NULL);
@@ -1511,7 +1532,7 @@ s32 org_mini_zip_ZipFile_isDirectory0(Runtime *runtime, JClass *clazz) {
     s32 index = localvar_getInt(runtime->localvar, 1);
     s32 ret = -1;
     if (zip_path_arr) {
-        ret = zip_is_directory(zip_path_arr->arr_body, index);
+        JNI_BLOCKING_IO(runtime, ret = zip_is_directory(zip_path_arr->arr_body, index));
     }
 
     push_int(runtime->stack, ret);

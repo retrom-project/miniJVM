@@ -609,6 +609,7 @@ enum {
     CLASS_STATUS_PREPARING,
     CLASS_STATUS_PREPARED,
     CLASS_STATUS_CLINITING,
+    CLASS_STATUS_CLINIT_FAILED,
     CLASS_STATUS_CLINITED,
 };
 
@@ -1205,7 +1206,9 @@ struct _ClassType {
     ArrayList *supers; //cache superclass and interfaces , for checkcast and instanceof
 
     //
-    s8 status;
+    volatile s8 status;
+    JavaThreadInfo *init_owner;
+    Instance *init_failure;
     u8 is_primitive; //primitive data type int/long/short/char/short/byte/float/double
     u8 is_jcloader; //is java classoader
     u8 is_weakref; //
@@ -1243,7 +1246,7 @@ s32 class_prepar(Instance *loader, JClass *clazz, Runtime *runtime);
 
 void _class_optimize(JClass *clazz);
 
-void class_clinit(JClass *clazz, Runtime *runtime);
+s32 class_clinit(JClass *clazz, Runtime *runtime);
 
 void class_clear_cached_virtualmethod(MiniJVM *jvm, JClass *tgt);
 

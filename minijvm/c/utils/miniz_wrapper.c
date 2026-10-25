@@ -85,7 +85,7 @@ s32 zip_loadfile(char const *jarpath, char const *filename, ByteBuf *buf) {
         return -1;
     }
     mtx_lock(&cached->lock);
-    file_index = mz_zip_reader_locate_file(&cached->archive, filename, NULL, 0);
+    file_index = mz_zip_reader_locate_file(&cached->archive, filename, NULL, MZ_ZIP_FLAG_CASE_SENSITIVE);
     if (file_index < 0 || !mz_zip_reader_file_stat(&cached->archive, file_index, &file_stat)) {
         mtx_unlock(&cached->lock);
         return -1;
@@ -120,7 +120,7 @@ s32 zip_loadfile_to_mem(char const *jarpath, char const *filename, c8 *buf, s64 
         ret = -1;
     } else {
 
-        file_index = mz_zip_reader_locate_file(&zipArchive, filename, NULL, 0);//
+        file_index = mz_zip_reader_locate_file(&zipArchive, filename, NULL, MZ_ZIP_FLAG_CASE_SENSITIVE);//
         if (!mz_zip_reader_file_stat(&zipArchive, file_index, &file_stat)) {
             ret = -1;
         } else {
@@ -150,7 +150,7 @@ s64 zip_get_file_unzip_size(char const *jarpath, char const *filename) {
         ret = -1;
     } else {
 
-        file_index = mz_zip_reader_locate_file(&zipArchive, filename, NULL, 0);//
+        file_index = mz_zip_reader_locate_file(&zipArchive, filename, NULL, MZ_ZIP_FLAG_CASE_SENSITIVE);//
         if (!mz_zip_reader_file_stat(&zipArchive, file_index, &file_stat)) {
             ret = -1;
         } else {
@@ -177,7 +177,7 @@ s32 zip_get_file_index(char const *jarpath, char const *filename) {
         ret = -1;
     } else {
 
-        file_index = mz_zip_reader_locate_file(&zipArchive, filename, NULL, 0);//
+        file_index = mz_zip_reader_locate_file(&zipArchive, filename, NULL, MZ_ZIP_FLAG_CASE_SENSITIVE);//
         if (!mz_zip_reader_file_stat(&zipArchive, file_index, &file_stat)) {
             ret = -1;
         } else {
