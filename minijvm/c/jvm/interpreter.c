@@ -3237,6 +3237,9 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             stack->sp = sp;
                             r->ins = jarray_create_by_type_index(r, r->count, r->idx);
                             sp = stack->sp;
+                            if (!r->ins && r->count >= 0) {
+                                goto label_outofmemory_throw;
+                            }
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(r);
                             jvm_printf("(a)newarray  [%llx] type:%c , r->count:%d  \n", (s64) (intptr_t) r->ins, getDataTypeTag(r->idx), r->count);
@@ -3265,6 +3268,9 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             }
                             r->ins = jarray_create_by_class(r, r->count, r->other);
                             sp = stack->sp;
+                            if (!r->ins && r->count >= 0) {
+                                goto label_outofmemory_throw;
+                            }
 
 #if _JVM_DEBUG_LOG_LEVEL > 5
                             invoke_deepth(r);
@@ -4082,6 +4088,12 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                 label_arrithmetic_throw: {
                         stack->sp = sp;
                         push_ref(stack, (__refer) exception_create(JVM_EXCEPTION_ARRITHMETIC, r));
+                        goto label_exception_handle;
+                    }
+
+                label_outofmemory_throw: {
+                        stack->sp = sp;
+                        push_ref(stack, (__refer) exception_create(JVM_ERROR_OUTOFMEMORY, r));
                         goto label_exception_handle;
                     }
 

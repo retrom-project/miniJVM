@@ -1180,8 +1180,14 @@ Instance *jarray_create_by_class(Runtime *runtime, s32 count, JClass *clazz) {
     if (count < 0)return NULL;
     s32 typeIdx = clazz->mb.arr_type_index;
     s32 width = DATA_TYPE_BYTES[typeIdx];
-    s32 insSize = instance_base_size() + (width * count);
-    Instance *arr = jvm_calloc(insSize);
+    // Compute in 64 bits: a large count must fail the allocation, not wrap to a small or negative size.
+    s64 requested = (s64) instance_base_size() + (s64) width * count;
+    Instance *arr = requested <= INT32_MAX ? jvm_calloc((u32) requested) : NULL;
+    if (!arr) {
+        jvm_printf("array allocation failed: %s count=%d bytes=%lld\n", utf8_cstr(clazz->name), count, (long long) requested);
+        return NULL;
+    }
+    s32 insSize = (s32) requested;
     arr->mb.heap_size = insSize;
     arr->mb.type = MEM_TYPE_ARR;
     arr->mb.clazz = clazz;
