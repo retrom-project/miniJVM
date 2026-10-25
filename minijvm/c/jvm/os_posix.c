@@ -312,11 +312,10 @@ void os_get_uuid(MiniJVM *jvm, Utf8String *buf) {
     }
 
     // Get absolute path of startup directory
-    char absPath[PATH_MAX] = {0};
-    if (realpath(utf8_cstr(jvm->startup_dir), absPath) == NULL) {
-        // If realpath fails, use the original path
-        strcpy(absPath, utf8_cstr(jvm->startup_dir));
-    }
+    // POSIX allocates the required length. A fixed 1024-byte fallback is
+    // smaller than Linux PATH_MAX and is rejected by fortified realpath.
+    char *resolvedPath = realpath(utf8_cstr(jvm->startup_dir), NULL);
+    const char *absPath = resolvedPath ? resolvedPath : utf8_cstr(jvm->startup_dir);
 
     u64 hash0 = 0;
     for (int i = 0; deviceId[i] != '\0'; i++) {
@@ -328,6 +327,8 @@ void os_get_uuid(MiniJVM *jvm, Utf8String *buf) {
     for (int i = 0; absPath[i] != '\0'; i++) {
         hash1 = 31 * hash1 + absPath[i];
     }
+
+    free(resolvedPath);
 
     // Format as UUID using the hash1 value
     char uuid[37] = {0};
