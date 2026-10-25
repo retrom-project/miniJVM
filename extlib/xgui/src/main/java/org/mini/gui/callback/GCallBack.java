@@ -28,7 +28,7 @@ public abstract class GCallBack implements GlfwCallback, GlfmCallBack {
     public static final float FPS_DEFAULT = 60f;
     static GCallBack instance;
 
-    protected GApplication gapp;
+    protected volatile GApplication gapp;
     protected GDesktop desktop;
     Thread openglThread;
 

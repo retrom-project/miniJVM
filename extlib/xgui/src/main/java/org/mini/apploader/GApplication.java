@@ -28,7 +28,7 @@ public abstract class GApplication implements FormHolder {
         STATE_NEW, STATE_INITED, STATE_RUNNING, STATE_PAUSEED, STATE_CLOSED,
     }
 
-    private AppState state = AppState.STATE_NEW;
+    private volatile AppState state = AppState.STATE_NEW;
 
     public static final String APP_CONFIG_FILE = "localsetting.propertites";
     static final String APP_LANG_KEY = "_inner_lang";
@@ -43,9 +43,8 @@ public abstract class GApplication implements FormHolder {
 
     private String appId = toString();
 
-    {
-        GCallBack.getInstance().setApplication(this);//put here to make sure GCallBack.getInstance() is not null
-    }
+    // AppLoader/AppManager publish the application after construction and metadata setup.
+    // Publishing here exposes partially initialized base and subclass fields to the GUI thread.
 
     private int curLang = GLanguage.ID_NO_DEF;
 
