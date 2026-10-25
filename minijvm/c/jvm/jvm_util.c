@@ -401,8 +401,27 @@ void vm_share_unlock(MiniJVM *jvm) {
     mtx_unlock(&jvm->threadlock.mutex_lock);
 }
 
+/* A condition wait must release every recursive level. The bookkeeping must
+ * also describe the released mutex, otherwise a woken owner inherits another
+ * thread's count and nested Java class loading can keep the lock forever. */
+static s32 vm_share_before_wait(MiniJVM *jvm) {
+    s32 depth = jvm->threadlock.count;
+    for (s32 i = 1; i < depth; i++) vm_share_unlock(jvm);
+    jvm->threadlock.owner_thread = NULL;
+    jvm->threadlock.count = 0;
+    return depth;
+}
+
+static void vm_share_after_wait(MiniJVM *jvm, s32 depth) {
+    jvm->threadlock.owner_thread = (JavaThreadInfo *) (intptr_t) thrd_current();
+    jvm->threadlock.count = 1;
+    for (s32 i = 1; i < depth; i++) vm_share_lock(jvm);
+}
+
 void vm_share_wait(MiniJVM *jvm) {
+    s32 depth = vm_share_before_wait(jvm);
     cnd_wait(&jvm->threadlock.thread_cond, &jvm->threadlock.mutex_lock);
+    vm_share_after_wait(jvm, depth);
 }
 
 void vm_share_timedwait(MiniJVM *jvm, s64 ms) {
@@ -410,10 +429,10 @@ void vm_share_timedwait(MiniJVM *jvm, s64 ms) {
     timespec_get(&t, TIME_UTC);
     t.tv_sec += ms / 1000;
     t.tv_nsec += (ms % 1000) * 1000000;
-    s32 ret = cnd_timedwait(&jvm->threadlock.thread_cond, &jvm->threadlock.mutex_lock, &t);
-    //    if (ret == ETIMEDOUT) {
-    //        s32 debug = 1;
-    //    }
+    if (t.tv_nsec >= 1000000000) { t.tv_sec++; t.tv_nsec -= 1000000000; }
+    s32 depth = vm_share_before_wait(jvm);
+    cnd_timedwait(&jvm->threadlock.thread_cond, &jvm->threadlock.mutex_lock, &t);
+    vm_share_after_wait(jvm, depth);
 }
 
 void vm_share_notify(MiniJVM *jvm) {

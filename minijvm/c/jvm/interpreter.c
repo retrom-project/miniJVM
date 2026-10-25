@@ -395,7 +395,8 @@ static inline s32 _optimize_inline_getter(JClass *clazz, s32 cfrIdx, Runtime *ru
         return RUNTIME_STATUS_EXCEPTION;
     }
     if (fi->_this_class->status < CLASS_STATUS_CLINITED) {
-        class_clinit(fi->_this_class, runtime);
+        s32 result = class_clinit(fi->_this_class, runtime);
+        if (result) return result;
     }
     if (fi->isrefer) {
         push_ref(stack, *((__refer *) (getInstanceFieldPtr(fins, fi))));
@@ -445,7 +446,8 @@ static inline s32 _optimize_inline_setter(JClass *clazz, s32 cfrIdx, Runtime *ru
     }
 
     if (fi->_this_class->status < CLASS_STATUS_CLINITED) {
-        class_clinit(fi->_this_class, runtime);
+        s32 result = class_clinit(fi->_this_class, runtime);
+        if (result) return result;
     }
     if (fi->isrefer) {
         __refer v = pop_ref(stack);
@@ -540,8 +542,18 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
 #if _JVM_DEBUG_SLOW_CALL_PROFILE
     profile_slow_call_enter(r, method, start_time);
 #endif
-    while (clazz->status < CLASS_STATUS_CLINITING) {
-        class_clinit(clazz, r);
+    if (clazz->status != CLASS_STATUS_CLINITED) {
+        ret = class_clinit(clazz, r);
+        if (ret) {
+            // Initialization happened before localvar_init. Only EXCEPTION
+            // places an exception on the stack; ERROR has no extra operand.
+            Instance *failure = ret == RUNTIME_STATUS_EXCEPTION ? pop_ref(r->stack) : NULL;
+            r->stack->sp -= method->para_slots;
+            if (failure) push_ref(r->stack, failure);
+            runtime_destroy_inl(r);
+            pruntime->son = NULL;
+            return ret;
+        }
     }
 #if _JVM_DEBUG_LOG_LEVEL > 3
     invoke_deepth(pruntime);
@@ -2761,8 +2773,9 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             }
                             if (r->fi->_this_class->status < CLASS_STATUS_CLINITED) {
                                 stack->sp = sp;
-                                class_clinit(r->fi->_this_class, r);
+                                ret = class_clinit(r->fi->_this_class, r);
                                 sp = stack->sp;
+                                if (ret) goto label_exception_handle;
                             }
                             if (r->fi->isrefer) {
                                 *r->pc = op_getstatic_ref;
@@ -2816,8 +2829,9 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             }
                             if (r->fi->_this_class->status < CLASS_STATUS_CLINITED) {
                                 stack->sp = sp;
-                                class_clinit(r->fi->_this_class, r);
+                                ret = class_clinit(r->fi->_this_class, r);
                                 sp = stack->sp;
+                                if (ret) goto label_exception_handle;
                             }
                             if (r->fi->isrefer) {
                                 // garbage collection mark
@@ -2878,8 +2892,9 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                 }
                                 if (r->fi->_this_class->status < CLASS_STATUS_CLINITED) {
                                     stack->sp = sp;
-                                    class_clinit(r->fi->_this_class, r);
+                                    ret = class_clinit(r->fi->_this_class, r);
                                     sp = stack->sp;
+                                    if (ret) goto label_exception_handle;
                                 }
                                 spin_lock(&r->jvm->lock_cloader);
                                 {
@@ -2953,8 +2968,9 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                 }
                                 if (r->fi->_this_class->status < CLASS_STATUS_CLINITED) {
                                     stack->sp = sp;
-                                    class_clinit(r->fi->_this_class, r);
+                                    ret = class_clinit(r->fi->_this_class, r);
                                     sp = stack->sp;
+                                    if (ret) goto label_exception_handle;
                                 }
                                 spin_lock(&r->jvm->lock_cloader);
                                 {
@@ -3004,7 +3020,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             } else {
                                 MethodInfo *m = NULL;
                                 if (r->cmr->methodInfo) {
-                                    if (r->cmr->methodInfo->_vtable_index >= 0 && r->ins->mb.clazz->vtable) {
+                                    if (r->cmr->methodInfo->_vtable_index >= 0 && r->cmr->methodInfo->_vtable_index < r->ins->mb.clazz->vtable_length && r->ins->mb.clazz->vtable) {
                                         m = r->ins->mb.clazz->vtable[r->cmr->methodInfo->_vtable_index];
                                     }
                                     // else if (r->cmr->methodInfo->_itable_index >= 0 && r->ins->mb.clazz->itable) {
@@ -3076,7 +3092,12 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                         r->pc += 3;
                                     }
                                     if (!match) {
-                                        *r->pc = op_invokevirtual_fast;
+                                        if (r->cmr->virtual_methods) *r->pc = op_invokevirtual_fast;
+                                        stack->sp = sp;
+                                        ret = execute_method_impl(r->m, r);
+                                        sp = stack->sp;
+                                        if (ret) goto label_exception_handle;
+                                        r->pc += 3;
                                     }
                                 }
                             }
@@ -3088,6 +3109,12 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         case op_invokespecial: {
                             r->cmr = class_get_constant_method_ref(clazz, *((u16 *) (r->pc + 1)));
                             r->m = r->cmr->methodInfo;
+                            if (!r->m) {
+                                stack->sp = sp;
+                                r->m = find_methodInfo_by_methodref(clazz, r->cmr->item.index, r);
+                                sp = stack->sp;
+                                r->cmr->methodInfo = r->m;
+                            }
 
                             if (!r->m) {
                                 r->err_msg = utf8_cstr(r->cmr->name);
@@ -3103,6 +3130,12 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                         case op_invokestatic: {
                             r->cmr = class_get_constant_method_ref(clazz, *((u16 *) (r->pc + 1)));
                             r->m = r->cmr->methodInfo;
+                            if (!r->m) {
+                                stack->sp = sp;
+                                r->m = find_methodInfo_by_methodref(clazz, r->cmr->item.index, r);
+                                sp = stack->sp;
+                                r->cmr->methodInfo = r->m;
+                            }
 
                             if (!r->m) {
                                 r->err_msg = utf8_cstr(r->cmr->name);
@@ -3137,7 +3170,12 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                                     r->err_msg = utf8_cstr(r->cmr->name);
                                     goto label_nosuchmethod_throw;
                                 } else {
-                                    *r->pc = op_invokeinterface_fast;
+                                    if (r->cmr->virtual_methods) *r->pc = op_invokeinterface_fast;
+                                    stack->sp = sp;
+                                    ret = execute_method_impl(r->m, r);
+                                    sp = stack->sp;
+                                    if (ret) goto label_exception_handle;
+                                    r->pc += 5;
                                 }
                             }
                             break;
@@ -3879,7 +3917,7 @@ s32 execute_method_impl(MethodInfo *method, Runtime *pruntime) {
                             } else {
                                 MethodInfo *m = NULL;
                                 if (r->cmr->methodInfo) {
-                                    if (r->cmr->methodInfo->_vtable_index >= 0 && r->ins->mb.clazz->vtable) {
+                                    if (r->cmr->methodInfo->_vtable_index >= 0 && r->cmr->methodInfo->_vtable_index < r->ins->mb.clazz->vtable_length && r->ins->mb.clazz->vtable) {
                                         m = r->ins->mb.clazz->vtable[r->cmr->methodInfo->_vtable_index];
                                     }
 //                                    else if (r->cmr->methodInfo->_itable_index >= 0 && r->ins->mb.clazz->itable) {
